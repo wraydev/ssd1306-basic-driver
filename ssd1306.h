@@ -23,7 +23,7 @@
 /** @brief Configuration macro - sets initial contrast of display*/
 #define CONFIG_INIT_CONTRAST		(0x8F)
 /** @brief Configuration macro - set to 1 if an assembly acceleration file is included to improve drawing speed of internal RAM*/
-#define CONFIG_ASM_ACC				(0)
+#define CONFIG_ASM_ACC				(1)
 
 /**
  * @brief Complete initialisation of the SSD1306 driver module for a given display.
@@ -40,18 +40,20 @@ void Ssd1306_init(void(*spi_raw_write)(uint8_t * const tx_buf, uint16_t tx_num),
 /**
  * @brief Function used to write raw data to internal display ram.
  * @param raw_data - pointer to raw 8 bit aray of data.
- * @param loc - location in the internal ram to start writing.
+ * @param row - the row in the internal ram to start writing.
+ * @param col - the column in the internal ram to start writing.
  * @param len - length of data to write.
  */
-void Ssd1306_write_raw_to_ram(uint8_t const * raw_data, const uint16_t loc, const uint16_t len);
+void Ssd1306_write_raw_to_ram(uint8_t const * raw_data, const uint16_t row, const uint16_t col, const uint16_t len);
 
 /**
  * @brief Function used to write a string to internal display ram.
  * @param str - pointer to the string to write.
- * @param loc - location in the internal ram to start writing.
+ * @param row - the row in the internal ram to start writing.
+ * @param col - the column in the internal ram to start writing.
  * @param len - length of string to write.
  */
-void Ssd1306_write_str_to_ram(char const * str, const uint16_t loc, const uint16_t len);
+void Ssd1306_write_str_to_ram(char const * str, const uint16_t row, const uint16_t col, const uint16_t len);
 
 /**
  * @brief Draws a line in the display RAM (top left to bottom right --> 0,0 --> max,max).
@@ -93,6 +95,19 @@ void Ssd1306_non_blocking_refresh(void);
 
 /** @brief indicates whether the SPI is busy on the display*/
 bool Ssd1306_is_busy(void);
+
+/**
+ * @brief Marks a region on the display to be marked for update
+ * @param page_start - starting row of dirty area
+ * @param page_end - last row of dirty area
+ * @param col_start - starting column of dirty area
+ * @param col_end - last column of dirty area
+ * @return true if successfully added - false if dirty mark buffer is full.
+ */
+bool Ssd1306_dirty_mark(uint8_t const page_start, uint8_t const page_end, const uint16_t col_start, const uint16_t col_end);
+
+/** @brief dirty marks entire display. */
+void Ssd1306_dirty_mark_all(void);
 
 /** @brief User MUST call this function inside the SPI tx complete ISR.*/
 void Ssd1306_spi_tx_done_callback(void);
