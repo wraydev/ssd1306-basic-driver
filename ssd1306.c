@@ -9,6 +9,8 @@
 #define DISPLAY_TOTAL_NUM_PIXELS	(DISPLAY_PIXEL_LENGTH * DISPLAY_PIXEL_HEIGHT)
 /** @brief Used to define array size for display ram*/
 #define DISPLAY_TOTAL_RAM_BYTES		(DISPLAY_TOTAL_NUM_PIXELS/8U)
+/** @brief Used in display update algorithm*/
+#define DISPLAY_TOTAL_NUM_PAGES		(DISPLAY_PIXEL_HEIGHT/8U)
 
 #if DISPLAY_PIXEL_HEIGHT == 32
 static uint8_t init_buf[] = {
@@ -36,7 +38,10 @@ static uint8_t init_buf[] = {
 		0x00,
 		0x03,
 		0x20, /* Display Horizontal Addressing Mode*/
-		0x00
+		0x00,
+		0x21, /* Display Col Start & End Address (0 & 127 Respectively) (128bit)*/
+		0x00,
+		0x7F
 };
 #elif DISPLAY_PIXEL_HEIGHT == 64
 static uint8_t init_buf[] = {
@@ -64,7 +69,10 @@ static uint8_t init_buf[] = {
 		0x00,
 		0x07,
 		0x20, /* Display Horizontal Addressing Mode*/
-		0x00
+		0x00,
+		0x21, /* Display Col Start & End Address (0 & 127 Respectively) (128bit)*/
+		0x00,
+		0x7F
 };
 #else
 #error "Please select a support pixel height (32 or 64)"
@@ -83,6 +91,9 @@ typedef struct SSD1306_t
 	uint8_t * cs_gpio;			/** pointer to register containing Chip Select GPIO*/
 	uint8_t cs_mask;			/** bit mask used to toggle chip select gpio (1 marks the bit of the register corresponding to pin level)*/
 	bool disp_ram_changed;		/** flag inidicating that the display ram has been changed through the API and the screen should be updated*/
+	uint8_t dirty_mark_array[DISPLAY_TOTAL_NUM_PAGES][6]; /** array containing dirt mark list of points*/
+	uint8_t dirty_mark_index; /** Index variable to navigate the dirty mark array as a circular buffer*/
+	bool update_entire_display; /** Flag indicating we should update the entire display RAM*/
 }ssd1306_t;
 
 ssd1306_t ssd1306_ctl; /** instance of ssd1306 control structure*/
@@ -91,7 +102,7 @@ ssd1306_t ssd1306_ctl; /** instance of ssd1306 control structure*/
  * Reason not to is it reduces the need for any computation on data being input to the lookup.
  */
 static const uint8_t Font5x7[128][6] = {
-		{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00}, /* INCOMPLETE */
+		{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}, /* INCOMPLETE */
 		{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00}, /* INCOMPLETE */
 		{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00}, /* INCOMPLETE */
 		{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00}, /* INCOMPLETE */
@@ -424,10 +435,11 @@ static void Plot_parallel_lines_high(uint16_t x0, uint16_t y0, uint16_t x1, uint
 /* END OF FUNCTION*/
 
 /**
- * @brief Writes a raw ssd1306 command byte.
- * @param value
+ * @brief Writes a raw ssd1306 command buffer.
+ * @param value - pointer to command buffer.
+ * @param len - length of command buffer to send.
  */
-static void Ssd1306_write_cmd(uint8_t value)
+static void Ssd1306_write_cmd_buf(uint8_t * value, uint8_t len)
 {
 	/* Ensure SPI isn't busy */
 	while(!ssd1306_ctl.tx_done)
@@ -444,7 +456,7 @@ static void Ssd1306_write_cmd(uint8_t value)
 	*ssd1306_ctl.dc_gpio &= ~ssd1306_ctl.dc_mask;
 
 	/* Start the write sequence*/
-	ssd1306_ctl.spi_raw_write(&value, 1U);
+	ssd1306_ctl.spi_raw_write(value, len);
 
 	/* Wait for write to complete*/
 	while(!ssd1306_ctl.tx_done)
@@ -453,6 +465,7 @@ static void Ssd1306_write_cmd(uint8_t value)
 	}
 }
 /* END OF FUNCTION*/
+
 /** @brief Writes the initialisation buffer of the ssd1306. */
 static void Ssd1306_write_init(void)
 {
@@ -484,9 +497,44 @@ static void Ssd1306_write_init(void)
 /** @brief Turns on and starts displaying the gddram of the SSD1306*/
 static void Ssd1306_display_on(void)
 {
-	Ssd1306_write_cmd(0xA4); /* Turn on the display*/
-	Ssd1306_write_cmd(0xA6); /* Display Normal Mode*/
-	Ssd1306_write_cmd(0xAF); /* Display ON in Normal Mode*/
+	static uint8_t cmd_buf[] = {0xA4, 0xA6, 0xAF};
+	Ssd1306_write_cmd_buf(cmd_buf, sizeof(cmd_buf));
+}
+/* END OF FUNCTION*/
+
+/** @brief Updates display write-to region*/
+static void Ssd1306_update_display_target_area(uint8_t index)
+{
+	Ssd1306_write_cmd_buf(ssd1306_ctl.dirty_mark_array[index], sizeof(ssd1306_ctl.dirty_mark_array[0]));
+}
+/* END OF FUNCTION*/
+
+/** @brief Updates display write-to region*/
+static void Ssd1306_update_display(uint8_t * const buf, const uint16_t len)
+{
+	/* Ensure SPI is free*/
+	while(!ssd1306_ctl.tx_done)
+	{
+		SSD1306_NOP();
+	}
+
+	ssd1306_ctl.tx_done = false;
+
+	/* Assert signals*/
+#if CONFIG_SPI_INTEGRATED_CS == 0
+	*ssd1306_ctl.cs_gpio &= ~ssd1306_ctl.cs_mask;
+#endif
+	*ssd1306_ctl.dc_gpio |= ssd1306_ctl.dc_mask;
+
+	/* Write to GDDRAM*/
+	ssd1306_ctl.spi_raw_write(buf, len);
+}
+/* END OF FUNCTION*/
+
+/** @brief Updates display write-to region*/
+static void Ssd1306_update_entire_display(void)
+{
+	Ssd1306_update_display(ssd1306_ctl.disp_region, DISPLAY_TOTAL_RAM_BYTES);
 }
 /* END OF FUNCTION*/
 
@@ -505,40 +553,69 @@ void Ssd1306_init(void(*spi_raw_write)(uint8_t * const tx_buf, uint16_t tx_num),
 	ssd1306_ctl.dc_mask = dc_mask;
 	ssd1306_ctl.cs_mask = cs_mask;
 	ssd1306_ctl.disp_ram_changed = true; /* Enable initial write to display*/
+	ssd1306_ctl.update_entire_display = true;
+	ssd1306_ctl.dirty_mark_index = 0U;
+
+	for(uint16_t i = 0U; i < DISPLAY_TOTAL_NUM_PAGES; ++i)
+	{
+		ssd1306_ctl.dirty_mark_array[i][0] = 0x22;
+		ssd1306_ctl.dirty_mark_array[i][1] = 0x0U;
+		ssd1306_ctl.dirty_mark_array[i][2] = 0x0U;
+		ssd1306_ctl.dirty_mark_array[i][3] = 0x21U;
+		ssd1306_ctl.dirty_mark_array[i][4] = 0x0U;
+		ssd1306_ctl.dirty_mark_array[i][5] = 0x0U;
+	}
 
 	/* Reset device*/
 	*ssd1306_ctl.reset_gpio &= ~ssd1306_ctl.reset_mask;
 	SSD1306_NOP();
+	SSD1306_NOP();
 	*ssd1306_ctl.reset_gpio |= ssd1306_ctl.reset_mask;
 
 	Ssd1306_write_init(); /* Init the display*/
+	Ssd1306_dirty_mark_all();
 	Ssd1306_blocking_refresh(); /* Update GDDRAM*/
 	Ssd1306_display_on(); /* Turn on the display*/
 }
 /* END OF FUNCTION*/
 
-void Ssd1306_write_raw_to_ram(uint8_t const * raw_data, const uint16_t loc, const uint16_t len)
+void Ssd1306_write_raw_to_ram(uint8_t const * raw_data, const uint16_t row, const uint16_t col, const uint16_t len)
 {
 	/* Write the data into the display buffer - while checking the written data is an actual change to the buffer*/
 	uint16_t change_cnt = 0U;
+
+	const uint16_t col_end_temp = col+(len * 6);
+	const uint16_t col_end = col_end_temp < DISPLAY_PIXEL_LENGTH ? col_end_temp : DISPLAY_PIXEL_LENGTH-1U;
+	const uint16_t row_end = row + (col_end_temp >> DISPLAY_PIXEL_LENGTH_LOG2);
+	const uint16_t loc_start = (row << DISPLAY_PIXEL_LENGTH_LOG2) + col;
+	const uint16_t col_adjusted = (row != row_end) && (col > 0U) ? 0U : col; /* If we start a new line, extend refresh area to whole rows*/
 
 	for(uint16_t i = 0U; i < len; ++i)
 	{
-		if(ssd1306_ctl.disp_region[loc+i] != raw_data[i])
+		if(ssd1306_ctl.disp_region[loc_start+i] != raw_data[i])
 		{
 			change_cnt += 1U;
-			ssd1306_ctl.disp_region[loc+i] = raw_data[i];
+			ssd1306_ctl.disp_region[loc_start] = raw_data[i];
 		}
 	}
 
-	ssd1306_ctl.disp_ram_changed = change_cnt > 0U;
+	if(change_cnt > 0U)
+	{
+		Ssd1306_dirty_mark(row, row_end, col_adjusted, col_end);
+	}
 }
 /* END OF FUNCTION*/
 
-void Ssd1306_write_str_to_ram(char const * str, const uint16_t loc, const uint16_t len)
+void Ssd1306_write_str_to_ram(char const * str, const uint16_t row, const uint16_t col, const uint16_t len)
 {
 	/* Write the data into the display buffer - while checking the written data is an actual change to the buffer*/
 	uint16_t change_cnt = 0U;
+
+	const uint16_t col_end_temp = col+(len * 6);
+	const uint16_t col_end = col_end_temp < DISPLAY_PIXEL_LENGTH ? col_end_temp : DISPLAY_PIXEL_LENGTH-1U;
+	const uint16_t row_end = row + (col_end_temp >> DISPLAY_PIXEL_LENGTH_LOG2);
+	const uint16_t loc_start = (row << DISPLAY_PIXEL_LENGTH_LOG2) + col;
+	const uint16_t col_adjusted = (row != row_end) && (col > 0U) ? 0U : col; /* If we start a new line, extend refresh area to whole rows*/
 
 	for(uint16_t i = 0; i < len; ++i)
 	{
@@ -547,7 +624,7 @@ void Ssd1306_write_str_to_ram(char const * str, const uint16_t loc, const uint16
 		for(uint16_t j = 0; j < 6; ++j)
 		{
 			/* place the string characters through the lookup table*/
-			uint8_t * const cur_dat = &ssd1306_ctl.disp_region[loc + offset + j];
+			uint8_t * const cur_dat = &ssd1306_ctl.disp_region[loc_start + offset + j];
 			const uint8_t new_dat = Font5x7[*(str+i)][j];
 			if(*cur_dat != new_dat)
 			{
@@ -557,7 +634,10 @@ void Ssd1306_write_str_to_ram(char const * str, const uint16_t loc, const uint16
 		}
 	}
 
-	ssd1306_ctl.disp_ram_changed = change_cnt > 0U;
+	if(change_cnt > 0U)
+	{
+		Ssd1306_dirty_mark(row, row_end, col_adjusted, col_end);
+	}
 }
 /* END OF FUNCTION*/
 
@@ -566,6 +646,12 @@ void Ssd1306_write_line_to_ram(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y
 	uint16_t dy = (y0>y1) ? y0 - y1 : y1 - y0;
 	uint16_t dx = (x0>x1) ? x0 - x1 : x1 - x0;
 	bool rev_inputs = (y0>y1) || (x0>x1);
+
+	const uint16_t col = (x0>x1) ? x1 : x0;
+	const uint16_t row = (y0>y1) ? y1 : y0;
+
+	const uint16_t col_end = col+dx;
+	const uint16_t row_end = row + (dy >> 3U);
 
     if(dy < dx)
     {
@@ -590,7 +676,7 @@ void Ssd1306_write_line_to_ram(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y
         }
     }
 
-    ssd1306_ctl.disp_ram_changed = true;
+	Ssd1306_dirty_mark(row, row_end, col, col_end);
 }
 /* END OF FUNCTION*/
 
@@ -623,7 +709,7 @@ void Ssd1306_write_parallel_lines_to_ram(uint16_t x0, uint16_t y0, uint16_t x1, 
         }
     }
 
-    ssd1306_ctl.disp_ram_changed = true;
+	Ssd1306_dirty_mark_all();
 }
 /* END OF FUNCTION*/
 
@@ -641,22 +727,35 @@ void Ssd1306_blocking_refresh(void)
 	{
 		ssd1306_ctl.disp_ram_changed = false;
 
-		/* Ensure SPI is free*/
-		while(!ssd1306_ctl.tx_done)
+		if(ssd1306_ctl.update_entire_display)
 		{
-			SSD1306_NOP();
+			ssd1306_ctl.update_entire_display = false;
+
+			Ssd1306_update_display_target_area(0U);
+
+			Ssd1306_update_entire_display();
 		}
+		else
+		{
+			uint8_t l_dmi = 0U;
+			while(l_dmi < ssd1306_ctl.dirty_mark_index)
+			{
+				const uint16_t col = ssd1306_ctl.dirty_mark_array[l_dmi][4];
+				const uint16_t col_length = ssd1306_ctl.dirty_mark_array[l_dmi][5] - ssd1306_ctl.dirty_mark_array[l_dmi][4];
 
-		ssd1306_ctl.tx_done = false;
+				Ssd1306_update_display_target_area(l_dmi);
 
-		/* Assert signals*/
-#if CONFIG_SPI_INTEGRATED_CS == 0
-		*ssd1306_ctl.cs_gpio &= ~ssd1306_ctl.cs_mask;
-#endif
-		*ssd1306_ctl.dc_gpio |= ssd1306_ctl.dc_mask;
+				for(uint16_t page = ssd1306_ctl.dirty_mark_array[l_dmi][1]; page < (ssd1306_ctl.dirty_mark_array[l_dmi][2]+1); ++page)
+				{
+					const uint16_t page_offset = page << DISPLAY_PIXEL_LENGTH_LOG2; /* Column start multiplied by 128*/
+					Ssd1306_update_display(&ssd1306_ctl.disp_region[page_offset + col], col_length);
+				}
 
-		/* Write to GDDRAM*/
-		ssd1306_ctl.spi_raw_write(ssd1306_ctl.disp_region, DISPLAY_TOTAL_RAM_BYTES);
+				l_dmi += 1U;
+			}
+
+			ssd1306_ctl.dirty_mark_index = 0U;
+		}
 
 		/* Wait for write to complete*/
 		while(!ssd1306_ctl.tx_done)
@@ -674,22 +773,35 @@ void Ssd1306_non_blocking_refresh(void)
 	{
 		ssd1306_ctl.disp_ram_changed = false;
 
-		/* Ensure SPI is free*/
-		while(!ssd1306_ctl.tx_done)
+		if(ssd1306_ctl.update_entire_display)
 		{
-			SSD1306_NOP();
+			ssd1306_ctl.update_entire_display = false;
+
+			Ssd1306_update_display_target_area(0U);
+
+			Ssd1306_update_entire_display();
 		}
+		else
+		{
+			uint8_t l_dmi = 0U;
+			while(l_dmi < ssd1306_ctl.dirty_mark_index)
+			{
+				const uint16_t col = ssd1306_ctl.dirty_mark_array[l_dmi][4];
+				const uint16_t col_length = ssd1306_ctl.dirty_mark_array[l_dmi][5] - ssd1306_ctl.dirty_mark_array[l_dmi][4];
 
-		ssd1306_ctl.tx_done = false;
+				Ssd1306_update_display_target_area(l_dmi);
 
-		/* Assert signals*/
-#if CONFIG_SPI_INTEGRATED_CS == 0
-		*ssd1306_ctl.cs_gpio &= ~ssd1306_ctl.cs_mask;
-#endif
-		*ssd1306_ctl.dc_gpio |= ssd1306_ctl.dc_mask;
+				for(uint16_t page = ssd1306_ctl.dirty_mark_array[l_dmi][1]; page < (ssd1306_ctl.dirty_mark_array[l_dmi][2]+1); ++page)
+				{
+					const uint16_t page_offset = page << DISPLAY_PIXEL_LENGTH_LOG2; /* Column start multiplied by 128*/
+					Ssd1306_update_display(&ssd1306_ctl.disp_region[page_offset + col], col_length);
+				}
 
-		/* Write to GDDRAM*/
-		ssd1306_ctl.spi_raw_write(ssd1306_ctl.disp_region, DISPLAY_TOTAL_RAM_BYTES);
+				l_dmi += 1U;
+			}
+
+			ssd1306_ctl.dirty_mark_index = 0U;
+		}
 	}
 }
 /* END OF FUNCTION*/
@@ -697,6 +809,36 @@ void Ssd1306_non_blocking_refresh(void)
 bool Ssd1306_is_busy(void)
 {
 	return !ssd1306_ctl.tx_done; /* Device is busy is tx is not done (false)*/
+}
+/* END OF FUNCTION*/
+
+bool Ssd1306_dirty_mark(uint8_t const page_start, uint8_t const page_end, const uint16_t col_start, const uint16_t col_end)
+{
+	bool added_sucessfully = false;
+	if(ssd1306_ctl.dirty_mark_index < DISPLAY_TOTAL_NUM_PAGES)
+	{
+		ssd1306_ctl.dirty_mark_array[ssd1306_ctl.dirty_mark_index][1U] = (page_end < page_start) ? page_end : page_start;
+		ssd1306_ctl.dirty_mark_array[ssd1306_ctl.dirty_mark_index][2U] = (page_end < page_start) ? page_start : page_end;
+		ssd1306_ctl.dirty_mark_array[ssd1306_ctl.dirty_mark_index][4U] = (col_end < col_start) ? col_end : col_start;
+		ssd1306_ctl.dirty_mark_array[ssd1306_ctl.dirty_mark_index][5U] = (col_end < col_start) ? col_start : col_end;
+
+		ssd1306_ctl.dirty_mark_index += 1U;
+		ssd1306_ctl.disp_ram_changed = true;
+		added_sucessfully = true;
+	}
+	return added_sucessfully;
+}
+/* END OF FUNCTION*/
+
+void Ssd1306_dirty_mark_all(void)
+{
+	ssd1306_ctl.update_entire_display = true;
+	ssd1306_ctl.dirty_mark_index = 0U;
+	ssd1306_ctl.dirty_mark_array[0U][1U] = 0U;
+	ssd1306_ctl.dirty_mark_array[0U][2U] = DISPLAY_TOTAL_NUM_PAGES-1U;
+	ssd1306_ctl.dirty_mark_array[0U][4U] = 0U;
+	ssd1306_ctl.dirty_mark_array[0U][5U] = DISPLAY_PIXEL_LENGTH-1U;
+	ssd1306_ctl.disp_ram_changed = true;
 }
 /* END OF FUNCTION*/
 
