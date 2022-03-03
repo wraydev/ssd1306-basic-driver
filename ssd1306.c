@@ -11,6 +11,16 @@
 #define DISPLAY_TOTAL_RAM_BYTES		(DISPLAY_TOTAL_NUM_PIXELS/8U)
 /** @brief Used in display update algorithm*/
 #define DISPLAY_TOTAL_NUM_PAGES		(DISPLAY_PIXEL_HEIGHT/8U)
+/** @brief Used to set the wait state for blocking delays in SPI transactions.*/
+#if CONFIG_STATE_WHILE_WAIT == 0
+#define WAIT()		SSD1306_NOP()
+#elif CONFIG_STATE_WHILE_WAIT == 1
+#define WAIT()		SSD1306_SLEEP()
+#elif CONFIG_STATE_WHILE_WAIT == 2
+#define WAIT()		SSD1306_DEEP_SLEEP()
+#else
+#error "Unsupported wait configuration - please set the state-while-wait macro to valid value"
+#endif
 
 #if DISPLAY_PIXEL_HEIGHT == 32
 static uint8_t init_buf[] = {
@@ -94,6 +104,11 @@ typedef struct SSD1306_t
 	uint8_t dirty_mark_array[DISPLAY_TOTAL_NUM_PAGES][6]; /** array containing dirt mark list of points*/
 	uint8_t dirty_mark_index; /** Index variable to navigate the dirty mark array as a circular buffer*/
 	bool update_entire_display; /** Flag indicating we should update the entire display RAM*/
+#if CONFIG_USE_DTC == 1
+	uint8_t tx_done_cnt;		/** Indicates number of times SPI tx done interrupt has been called*/
+	void(*dtc_enable)(void);	/** Function pointer for DTC enable*/
+	void(*dtc_update_source_and_size)(uint16_t src_addr, uint16_t siz_of_xfer);	/** Function pointer for DTC update source and size of transfer*/
+#endif
 }ssd1306_t;
 
 ssd1306_t ssd1306_ctl; /** instance of ssd1306 control structure*/
@@ -102,7 +117,7 @@ ssd1306_t ssd1306_ctl; /** instance of ssd1306 control structure*/
  * Reason not to is it reduces the need for any computation on data being input to the lookup.
  */
 static const uint8_t Font5x7[128][6] = {
-		{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}, /* INCOMPLETE */
+		{0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, /* 0 = nothing */
 		{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00}, /* INCOMPLETE */
 		{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00}, /* INCOMPLETE */
 		{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00}, /* INCOMPLETE */
@@ -291,28 +306,28 @@ static void Plot_line_low(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, in
 {
 	int16_t yi = 1;
 
-    if(dy < 0)
-    {
-        yi = -1;
-        dy = -dy;
-    }
+	if(dy < 0)
+	{
+		yi = -1;
+		dy = -dy;
+	}
 
-    int16_t D = (2*dy) - dx;
-    int16_t y = y0;
+	int16_t D = (2*dy) - dx;
+	int16_t y = y0;
 
-    for (uint16_t x = x0; x < x1; ++x)
-    {
-        Set_pixel(x, (uint16_t)(y));
-        if(D > 0)
-        {
-            y = y + yi;
-            D = D + (2*(dy - (int16_t)(dx)));
-        }
-        else
-        {
-            D = D + 2*dy;
-        }
-    }
+	for (uint16_t x = x0; x < x1; ++x)
+	{
+		Set_pixel(x, (uint16_t)(y));
+		if(D > 0)
+		{
+			y = y + yi;
+			D = D + (2*(dy - (int16_t)(dx)));
+		}
+		else
+		{
+			D = D + 2*dy;
+		}
+	}
 }
 /* END OF FUNCTION*/
 
@@ -329,28 +344,28 @@ static void Plot_line_high(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, i
 {
 	int16_t xi = 1;
 
-    if(dx < 0)
-    {
-        xi = -1;
-        dx = -dx;
-    }
+	if(dx < 0)
+	{
+		xi = -1;
+		dx = -dx;
+	}
 
-    int16_t D = (2*dx) - dy;
-    int16_t x = x0;
+	int16_t D = (2*dx) - dy;
+	int16_t x = x0;
 
-    for (uint16_t y = (int16_t)(y0); y < (int16_t)(y1); ++y)
-    {
-        Set_pixel((uint16_t)(x), y);
-        if(D > 0)
-        {
-            x = x + xi;
-            D = D + (2*(dx - dy));
-        }
-        else
-        {
-            D = D + 2*dx;
-        }
-    }
+	for (uint16_t y = (int16_t)(y0); y < (int16_t)(y1); ++y)
+	{
+		Set_pixel((uint16_t)(x), y);
+		if(D > 0)
+		{
+			x = x + xi;
+			D = D + (2*(dx - dy));
+		}
+		else
+		{
+			D = D + 2*dx;
+		}
+	}
 }
 /* END OF FUNCTION*/
 
@@ -368,29 +383,29 @@ static void Plot_parallel_lines_low(uint16_t x0, uint16_t y0, uint16_t x1, uint1
 {
 	int16_t yi = 1;
 
-    if(dy < 0)
-    {
-        yi = -1;
-        dy = -dy;
-    }
+	if(dy < 0)
+	{
+		yi = -1;
+		dy = -dy;
+	}
 
-    int16_t D = (2*dy) - dx;
-    int16_t y = y0;
+	int16_t D = (2*dy) - dx;
+	int16_t y = y0;
 
-    for (uint16_t x = x0; x < x1; ++x)
-    {
-        Set_pixel(x, (uint16_t)(y));
-        Set_pixel(x, (uint16_t)(y)+offset);
-        if(D > 0)
-        {
-            y = y + yi;
-            D = D + (2*(dy - (int16_t)(dx)));
-        }
-        else
-        {
-            D = D + 2*dy;
-        }
-    }
+	for (uint16_t x = x0; x < x1; ++x)
+	{
+		Set_pixel(x, (uint16_t)(y));
+		Set_pixel(x, (uint16_t)(y)+offset);
+		if(D > 0)
+		{
+			y = y + yi;
+			D = D + (2*(dy - (int16_t)(dx)));
+		}
+		else
+		{
+			D = D + 2*dy;
+		}
+	}
 }
 /* END OF FUNCTION*/
 
@@ -408,29 +423,66 @@ static void Plot_parallel_lines_high(uint16_t x0, uint16_t y0, uint16_t x1, uint
 {
 	int16_t xi = 1;
 
-    if(dx < 0)
-    {
-        xi = -1;
-        dx = -dx;
-    }
+	if(dx < 0)
+	{
+		xi = -1;
+		dx = -dx;
+	}
 
-    int16_t D = (2*dx) - dy;
-    int16_t x = x0;
+	int16_t D = (2*dx) - dy;
+	int16_t x = x0;
 
-    for (uint16_t y = y0; y < y1; ++y)
-    {
-        Set_pixel((uint16_t)(x), y);
-        Set_pixel((uint16_t)(x)+offset, y);
-        if(D > 0)
-        {
-            x = x + xi;
-            D = D + (2*(dx - dy));
-        }
-        else
-        {
-            D = D + 2*dx;
-        }
-    }
+	for (uint16_t y = y0; y < y1; ++y)
+	{
+		Set_pixel((uint16_t)(x), y);
+		Set_pixel((uint16_t)(x)+offset, y);
+		if(D > 0)
+		{
+			x = x + xi;
+			D = D + (2*(dx - dy));
+		}
+		else
+		{
+			D = D + 2*dx;
+		}
+	}
+}
+/* END OF FUNCTION*/
+
+/**
+ * @brief Used to send SPI data.
+ * @param tx_buf - pointer to buffer for transmission.
+ * @param tx_num - number of bytes to send.
+ */
+static inline void Spi_send_blocking(uint8_t * const tx_buf, uint16_t tx_num)
+{
+	/* Ensure SPI isn't busy */
+	while(!ssd1306_ctl.tx_done)
+	{
+		WAIT();
+	}
+
+	ssd1306_ctl.tx_done = false;
+
+	/* Assert chip select signal - de-asserted in the spi callback*/
+	*ssd1306_ctl.cs_gpio &= ~ssd1306_ctl.cs_mask;
+
+#if CONFIG_USE_DTC == 1
+	ssd1306_ctl.dtc_update_source_and_size((uint16_t)(tx_buf)+1U, tx_num-1U);
+	ssd1306_ctl.dtc_enable();
+
+	/* Start the write sequence*/
+	ssd1306_ctl.spi_raw_write(tx_buf, 1U);
+#else
+	/* Start the write sequence*/
+	ssd1306_ctl.spi_raw_write(tx_buf, tx_num);
+#endif
+
+	/* Wait for write to complete*/
+	while(!ssd1306_ctl.tx_done)
+	{
+		WAIT();
+	}
 }
 /* END OF FUNCTION*/
 
@@ -441,64 +493,25 @@ static void Plot_parallel_lines_high(uint16_t x0, uint16_t y0, uint16_t x1, uint
  */
 static void Ssd1306_write_cmd_buf(uint8_t * value, uint8_t len)
 {
-	/* Ensure SPI isn't busy */
-	while(!ssd1306_ctl.tx_done)
-	{
-		SSD1306_NOP();
-	}
-
-	ssd1306_ctl.tx_done = false;
-
-	/* Assert control signals - de-asserted in the spi callback*/
-#if CONFIG_SPI_INTEGRATED_CS == 0
-	*ssd1306_ctl.cs_gpio &= ~ssd1306_ctl.cs_mask;
-#endif
+	/* Assert data/control for control command - set to default data/GDDRAM in SPI tx done interrupt handler*/
 	*ssd1306_ctl.dc_gpio &= ~ssd1306_ctl.dc_mask;
+	Spi_send_blocking(value, len);
+}
+/* END OF FUNCTION*/
 
-	/* Start the write sequence*/
-	ssd1306_ctl.spi_raw_write(value, len);
-
-	/* Wait for write to complete*/
-	while(!ssd1306_ctl.tx_done)
-	{
-		SSD1306_NOP();
-	}
+/** @brief Updates display write-to region*/
+static void Ssd1306_update_display(uint8_t * const buf, const uint16_t len)
+{
+	/* Assert data/control for data/GDDRAM command - set to default data/GDDRAM in SPI tx done interrupt handler*/
+	*ssd1306_ctl.dc_gpio |= ssd1306_ctl.dc_mask;
+	Spi_send_blocking(buf, len);
 }
 /* END OF FUNCTION*/
 
 /** @brief Writes the initialisation buffer of the ssd1306. */
 static void Ssd1306_write_init(void)
 {
-	/* Ensure SPI isn't busy */
-	while(!ssd1306_ctl.tx_done)
-	{
-		SSD1306_NOP();
-	}
-
-	ssd1306_ctl.tx_done = false;
-
-	/* Assert control signals - de-asserted in the spi callback*/
-#if CONFIG_SPI_INTEGRATED_CS == 0
-	*ssd1306_ctl.cs_gpio &= ~ssd1306_ctl.cs_mask;
-#endif
-	*ssd1306_ctl.dc_gpio &= ~ssd1306_ctl.dc_mask;
-
-	/* Start the write sequence*/
-	ssd1306_ctl.spi_raw_write(init_buf, sizeof(init_buf));
-
-	/* Wait for write to complete*/
-	while(!ssd1306_ctl.tx_done)
-	{
-		SSD1306_NOP();
-	}
-}
-/* END OF FUNCTION*/
-
-/** @brief Turns on and starts displaying the gddram of the SSD1306*/
-static void Ssd1306_display_on(void)
-{
-	static uint8_t cmd_buf[] = {0xA4, 0xA6, 0xAF};
-	Ssd1306_write_cmd_buf(cmd_buf, sizeof(cmd_buf));
+	Ssd1306_write_cmd_buf(init_buf, sizeof(init_buf));
 }
 /* END OF FUNCTION*/
 
@@ -510,40 +523,20 @@ static void Ssd1306_update_display_target_area(uint8_t index)
 /* END OF FUNCTION*/
 
 /** @brief Updates display write-to region*/
-static void Ssd1306_update_display(uint8_t * const buf, const uint16_t len)
-{
-	/* Ensure SPI is free*/
-	while(!ssd1306_ctl.tx_done)
-	{
-		SSD1306_NOP();
-	}
-
-	ssd1306_ctl.tx_done = false;
-
-	/* Assert signals*/
-#if CONFIG_SPI_INTEGRATED_CS == 0
-	*ssd1306_ctl.cs_gpio &= ~ssd1306_ctl.cs_mask;
-#endif
-	*ssd1306_ctl.dc_gpio |= ssd1306_ctl.dc_mask;
-
-	/* Write to GDDRAM*/
-	ssd1306_ctl.spi_raw_write(buf, len);
-}
-/* END OF FUNCTION*/
-
-/** @brief Updates display write-to region*/
 static void Ssd1306_update_entire_display(void)
 {
-	Ssd1306_update_display(ssd1306_ctl.disp_region, DISPLAY_TOTAL_RAM_BYTES);
+	Ssd1306_update_display(ssd1306_ctl.disp_region, 256);
+	Ssd1306_update_display(ssd1306_ctl.disp_region+256, 256);
 }
 /* END OF FUNCTION*/
 
 void Ssd1306_init(void(*spi_raw_write)(uint8_t * const tx_buf, uint16_t tx_num), uint8_t * reset_gpio, const uint8_t reset_mask, uint8_t * dc_gpio, const uint8_t dc_mask, uint8_t * cs_gpio, const uint8_t cs_mask)
 {
 	ssd1306_ctl.tx_done = true;
+	ssd1306_ctl.tx_done_cnt = 0U;
 	for(uint16_t i = 0U; i < DISPLAY_TOTAL_RAM_BYTES; ++i)
 	{
-		ssd1306_ctl.disp_region[i] = 0x0U;
+		ssd1306_ctl.disp_region[i] = 0x00U;
 	}
 	ssd1306_ctl.spi_raw_write = spi_raw_write;
 	ssd1306_ctl.reset_gpio = reset_gpio;
@@ -576,6 +569,20 @@ void Ssd1306_init(void(*spi_raw_write)(uint8_t * const tx_buf, uint16_t tx_num),
 	Ssd1306_dirty_mark_all();
 	Ssd1306_blocking_refresh(); /* Update GDDRAM*/
 	Ssd1306_display_on(); /* Turn on the display*/
+}
+/* END OF FUNCTION*/
+
+void Ssd1306_display_on(void)
+{
+	static uint8_t cmd_buf[] = {0xA4, 0xA6, 0xAF};
+	Ssd1306_write_cmd_buf(cmd_buf, sizeof(cmd_buf));
+}
+/* END OF FUNCTION*/
+
+void Ssd1306_display_off(void)
+{
+	static uint8_t cmd_buf[] = {0xA4, 0xA6, 0xAE};
+	Ssd1306_write_cmd_buf(cmd_buf, sizeof(cmd_buf));
 }
 /* END OF FUNCTION*/
 
@@ -653,28 +660,28 @@ void Ssd1306_write_line_to_ram(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y
 	const uint16_t col_end = col+dx;
 	const uint16_t row_end = row + (dy >> 3U);
 
-    if(dy < dx)
-    {
-        if(rev_inputs)
-        {
-            Plot_line_low(x1, y1, x0, y0, dx, dy);
-        }
-        else
-        {
-        	Plot_line_low(x0, y0, x1, y1, dx, dy);
-        }
-    }
-    else
-    {
-        if(rev_inputs)
-        {
-        	Plot_line_high(x1, y1, x0, y0, dx, dy);
-        }
-        else
-        {
-        	Plot_line_high(x0, y0, x1, y1, dx, dy);
-        }
-    }
+	if(dy < dx)
+	{
+		if(rev_inputs)
+		{
+			Plot_line_low(x1, y1, x0, y0, dx, dy);
+		}
+		else
+		{
+			Plot_line_low(x0, y0, x1, y1, dx, dy);
+		}
+	}
+	else
+	{
+		if(rev_inputs)
+		{
+			Plot_line_high(x1, y1, x0, y0, dx, dy);
+		}
+		else
+		{
+			Plot_line_high(x0, y0, x1, y1, dx, dy);
+		}
+	}
 
 	Ssd1306_dirty_mark(row, row_end, col, col_end);
 }
@@ -686,28 +693,28 @@ void Ssd1306_write_parallel_lines_to_ram(uint16_t x0, uint16_t y0, uint16_t x1, 
 	uint16_t dx = (x0>x1) ? x0 - x1 : x1 - x0;
 	bool rev_inputs = (y0>y1) || (x0>x1);
 
-    if(dy < dx)
-    {
-        if(rev_inputs)
-        {
-            Plot_parallel_lines_low(x1, y1, x0, y0, dx, dy, offset);
-        }
-        else
-        {
-        	Plot_parallel_lines_low(x0, y0, x1, y1, dx, dy, offset);
-        }
-    }
-    else
-    {
-        if(rev_inputs)
-        {
-        	Plot_parallel_lines_high(x1, y1, x0, y0, dx, dy, offset);
-        }
-        else
-        {
-        	Plot_parallel_lines_high(x0, y0, x1, y1, dx, dy, offset);
-        }
-    }
+	if(dy < dx)
+	{
+		if(rev_inputs)
+		{
+			Plot_parallel_lines_low(x1, y1, x0, y0, dx, dy, offset);
+		}
+		else
+		{
+			Plot_parallel_lines_low(x0, y0, x1, y1, dx, dy, offset);
+		}
+	}
+	else
+	{
+		if(rev_inputs)
+		{
+			Plot_parallel_lines_high(x1, y1, x0, y0, dx, dy, offset);
+		}
+		else
+		{
+			Plot_parallel_lines_high(x0, y0, x1, y1, dx, dy, offset);
+		}
+	}
 
 	Ssd1306_dirty_mark_all();
 }
@@ -766,46 +773,6 @@ void Ssd1306_blocking_refresh(void)
 }
 /* END OF FUNCTION*/
 
-void Ssd1306_non_blocking_refresh(void)
-{
-	/* Only update if display ram has changed*/
-	if(ssd1306_ctl.disp_ram_changed)
-	{
-		ssd1306_ctl.disp_ram_changed = false;
-
-		if(ssd1306_ctl.update_entire_display)
-		{
-			ssd1306_ctl.update_entire_display = false;
-
-			Ssd1306_update_display_target_area(0U);
-
-			Ssd1306_update_entire_display();
-		}
-		else
-		{
-			uint8_t l_dmi = 0U;
-			while(l_dmi < ssd1306_ctl.dirty_mark_index)
-			{
-				const uint16_t col = ssd1306_ctl.dirty_mark_array[l_dmi][4];
-				const uint16_t col_length = ssd1306_ctl.dirty_mark_array[l_dmi][5] - ssd1306_ctl.dirty_mark_array[l_dmi][4];
-
-				Ssd1306_update_display_target_area(l_dmi);
-
-				for(uint16_t page = ssd1306_ctl.dirty_mark_array[l_dmi][1]; page < (ssd1306_ctl.dirty_mark_array[l_dmi][2]+1); ++page)
-				{
-					const uint16_t page_offset = page << DISPLAY_PIXEL_LENGTH_LOG2; /* Column start multiplied by 128*/
-					Ssd1306_update_display(&ssd1306_ctl.disp_region[page_offset + col], col_length);
-				}
-
-				l_dmi += 1U;
-			}
-
-			ssd1306_ctl.dirty_mark_index = 0U;
-		}
-	}
-}
-/* END OF FUNCTION*/
-
 bool Ssd1306_is_busy(void)
 {
 	return !ssd1306_ctl.tx_done; /* Device is busy is tx is not done (false)*/
@@ -845,10 +812,29 @@ void Ssd1306_dirty_mark_all(void)
 void Ssd1306_spi_tx_done_callback(void)
 {
 	/* Set tx to done (no longer busy) and de-assert control signals*/
+#if CONFIG_USE_DTC == 1
+	/* When using the DTC - the interrupt will fire twice before deassertion of signals should be performed*/
+	ssd1306_ctl.tx_done_cnt += 1U;
+	if(ssd1306_ctl.tx_done_cnt > 1U)
+	{
+		ssd1306_ctl.tx_done_cnt = 0U;
+		ssd1306_ctl.tx_done = true;
+		*ssd1306_ctl.cs_gpio |= ssd1306_ctl.cs_mask;
+		*ssd1306_ctl.dc_gpio |= ssd1306_ctl.dc_mask;
+	}
+#else
 	ssd1306_ctl.tx_done = true;
-#if CONFIG_SPI_INTEGRATED_CS == 0
 	*ssd1306_ctl.cs_gpio |= ssd1306_ctl.cs_mask;
-#endif
 	*ssd1306_ctl.dc_gpio |= ssd1306_ctl.dc_mask;
+#endif
 }
 /* END OF FUNCTION*/
+
+#if CONFIG_USE_DTC == 1
+void Ssd1306_setup_dtc_api(void(*dtc_enable)(void), void(*dtc_update_source_and_size)(uint16_t src_addr, uint16_t siz_of_xfer))
+{
+	ssd1306_ctl.dtc_enable = dtc_enable;
+	ssd1306_ctl.dtc_update_source_and_size = dtc_update_source_and_size;
+}
+/* END OF FUNCTION*/
+#endif
