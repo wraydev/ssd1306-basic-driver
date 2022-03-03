@@ -1,5 +1,5 @@
-;	ssd1306_rl78_llvm_acc.asm
-;	@brief assembly code for CLANG compiler on RL78 to accelerate RAM drawing.
+;	ssd1306_rl78_ccrlacc.asm
+;	@brief assembly code for CCRL compiler on RL78 to accelerate RAM drawing.
 ;	@details
 ;	Contains the following functions:
 ;		- void Set_pixel(uint16_t x, uint16_t y);
