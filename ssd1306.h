@@ -25,7 +25,7 @@
 /** @brief Configuration macro - sets initial contrast of display*/
 #define CONFIG_INIT_CONTRAST		(0x8F)
 /** @brief Configuration macro - set to 1 if an assembly acceleration file is included to improve drawing speed of internal RAM*/
-#define CONFIG_ASM_ACC				(0)
+#define CONFIG_ASM_ACC				(1)
 /** @brief Configuration macro - set to 1 if the DTC is being used to perform SPI transactions*/
 #define CONFIG_USE_DTC				(1)
 /** @brief Configuration macro:

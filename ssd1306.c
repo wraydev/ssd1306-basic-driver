@@ -406,6 +406,7 @@ static void Plot_parallel_lines_low(uint16_t x0, uint16_t y0, uint16_t x1, uint1
 			D = D + 2*dy;
 		}
 	}
+	Set_pixel(x1, y1+offset);
 }
 /* END OF FUNCTION*/
 
@@ -446,6 +447,7 @@ static void Plot_parallel_lines_high(uint16_t x0, uint16_t y0, uint16_t x1, uint
 			D = D + 2*dx;
 		}
 	}
+	Set_pixel(x1+offset, y1);
 }
 /* END OF FUNCTION*/
 
@@ -626,6 +628,7 @@ void Ssd1306_write_str_to_ram(char const * str, const uint16_t row, const uint16
 
 	for(uint16_t i = 0; i < len; ++i)
 	{
+		/* The 6's in this loop are from the font width*/
 		const uint16_t offset = i * 6;
 
 		for(uint16_t j = 0; j < 6; ++j)
